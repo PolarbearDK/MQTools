@@ -13,7 +13,16 @@ namespace MQTools
     {
         Body,
         Extension,
-        Label
+        Label,
+    }
+
+    public enum ReadOnlyMessagePart
+    {
+        Body = MessagePart.Body,
+        Extension = MessagePart.Extension,
+        Label = MessagePart.Label,
+        Id,
+        CorrelationId,
     }
 
     public class MyMessageContext
@@ -21,79 +30,64 @@ namespace MQTools
         private readonly MessageQueueTransaction _transaction;
         private readonly Message _message;
         private readonly Encoding _encoding;
+        private byte[] _body;
+        private Lazy<string> _extensionLazy;
+        private Lazy<HeaderInfo[]> _headersLazy;
 
         public MyMessageContext(MessageQueueTransaction transaction, Message message, Encoding encoding)
         {
             _transaction = transaction;
             _message = message;
             _encoding = encoding;
+            _body = ((MemoryStream)_message.BodyStream).ToArray();
+            ExtensionInitLazy(_message.Extension);
         }
 
-        private bool _bodyStreamLoaded = false;
-        private byte[] _body;
-
-        public string GetBody()
+        private void ExtensionInitLazy(byte[] bytes)
         {
-            if (!_bodyStreamLoaded)
-            {
-                _body = ((MemoryStream)_message.BodyStream).ToArray();
-                _bodyStreamLoaded = true;
-            }
-
-            if (_body.Length > 0)
-            {
-                return _encoding.GetString(_body);
-            }
-
-            return null;
+            _extensionLazy = new Lazy<string>(() => GetStringFromBytes(bytes));
+            _headersLazy = new Lazy<HeaderInfo[]>(() => GetHeaders(bytes));
         }
 
-        public string GetExtension()
+        private string GetStringFromBytes(byte[] bytes)
         {
-            var bytes = _message.Extension;
-            if (bytes.Length > 0)
-            {
-                return _encoding.GetString(bytes);
-            }
-            return null;
+            return bytes.Length > 0
+                ? _encoding.GetString(bytes)
+                : null;
         }
 
-        private bool _headerLoaded = false;
-        private HeaderInfo[] _headers;
-
-        public HeaderInfo[] GetHeaders()
+        private static HeaderInfo[] GetHeaders(byte[] extension)
         {
-            if (!_headerLoaded)
+            using (var mr = new MemoryStream(extension))
             {
-                _headers = new HeaderInfo[] { };
-                _headerLoaded = true;
-
-                var bytes = _message.Extension;
-                using (var mr = new MemoryStream(bytes))
+                try
                 {
-                    try
-                    {
-                        var ser = new XmlSerializer(typeof (HeaderInfo[]));
-                        _headers = (HeaderInfo[]) ser.Deserialize(mr);
-                    }
-// ReSharper disable once EmptyGeneralCatchClause
-                    catch {}
+                    var serializer = new XmlSerializer(typeof(HeaderInfo[]));
+                    return (HeaderInfo[])serializer.Deserialize(mr);
+                }
+                // ReSharper disable once EmptyGeneralCatchClause
+                catch
+                {
                 }
             }
 
-            return _headers;
+            return new HeaderInfo[] {};
         }
 
-        public string Get(MessagePart part)
+        public string Get(ReadOnlyMessagePart part)
         {
-            switch(part)
+            switch (part)
             {
-                case MessagePart.Body:
-                    return GetBody();
-                case MessagePart.Extension:
-                    return GetExtension();
-                case MessagePart.Label:
+                case ReadOnlyMessagePart.Body:
+                    return GetStringFromBytes(_body);
+                case ReadOnlyMessagePart.Extension:
+                    return _extensionLazy.Value;
+                case ReadOnlyMessagePart.Label:
                     return _message.Label;
+                case ReadOnlyMessagePart.Id:
+                    return _message.Id;
+                case ReadOnlyMessagePart.CorrelationId:
+                    return _message.CorrelationId;
                 default:
                     throw new ArgumentOutOfRangeException("part");
             }
@@ -108,6 +102,7 @@ namespace MQTools
                     break;
                 case MessagePart.Extension:
                     _message.Extension = _encoding.GetBytes(data);
+                    ExtensionInitLazy(_message.Extension);
                     break;
                 case MessagePart.Label:
                     _message.Label = data;
@@ -129,12 +124,9 @@ namespace MQTools
 
         private void Send(MessageQueue queue, bool isReturn)
         {
-            if (_bodyStreamLoaded)
-            {
-                _message.BodyStream = new MemoryStream(_body);
-            }
+            _message.BodyStream = new MemoryStream(_body);
 
-            if(!isReturn)
+            if (!isReturn)
                 Console.WriteLine("Moved message with ID {0} to queue {1}", _message.Id, queue.QueueName);
 
             try
@@ -174,16 +166,20 @@ namespace MQTools
             Console.WriteLine("Cloned message with ID {0} to queue {1}", message.Id, queue.QueueName);
         }
 
+        /// <summary>
+        /// Get NServiceBus sent time.
+        /// </summary>
+        /// <returns></returns>
         public DateTime? GetUtcSentTime()
         {
-            var headers = GetHeaders();
-            var header = headers.SingleOrDefault(x => x.Key == Headers.TimeSent);
+            var header = _headersLazy.Value.SingleOrDefault(x => x.Key == Headers.TimeSent);
             if (header != null)
             {
                 try
                 {
                     return DateTimeExtensions.ToUtcDateTime(header.Value);
                 }
+                // ReSharper disable once EmptyGeneralCatchClause
                 catch (Exception)
                 {
                 }

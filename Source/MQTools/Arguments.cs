@@ -6,6 +6,11 @@ using Miracle.Arguments;
 
 namespace MQTools
 {
+    // ReSharper disable MemberCanBePrivate.Global
+    // ReSharper disable UnusedAutoPropertyAccessor.Global
+    // ReSharper disable UnusedMember.Global
+    // ReSharper disable MemberCanBeProtected.Global
+
     /// <summary>
     /// Sample argument class that shows examples of most of the functionality of the CommandLineParser.
     /// </summary>
@@ -76,11 +81,11 @@ namespace MQTools
         {
         }
 
-        public virtual void Cleanup()
+        public void Cleanup()
         {
         }
 
-        public abstract bool Match(MyMessageContext context, MessagePart messagePart);
+        public abstract bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart);
 
         [ArgumentName("StringComparison")]
         [ArgumentDescription("StringComparison used for string compares. Default is CurrentCultureIgnoreCase.")]
@@ -102,13 +107,13 @@ namespace MQTools
             Regex = new Regex(Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
         }
 
-        public override bool Match(MyMessageContext context, MessagePart messagePart)
+        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
         {
             return Regex.IsMatch(context.Get(messagePart));
         }
     }
 
-    [ArgumentDescription("Check that message part is like a simple wildcard expression")]
+    [ArgumentDescription(@"Check that message part is like a simple ""DOS"" wildcard expression (* and ?)")]
     public class LikeCriteria : MatchCriteria
     {
         // In prepare convert pattern into compiled regular expressions
@@ -132,7 +137,7 @@ namespace MQTools
             _utcCompareTime = DateTime.UtcNow;
         }
 
-        public override bool Match(MyMessageContext context, MessagePart messagePart)
+        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
         {
             var sentTime = context.GetUtcSentTime();
             if (sentTime != null)
@@ -143,14 +148,14 @@ namespace MQTools
         }
     }
 
-    [ArgumentDescription("Check that message contains a string")]
-    public class ContainsCriteria: CriteriaBase
+    [ArgumentDescription("Check that message part contains a string")]
+    public class ContainsCriteria : CriteriaBase
     {
         [ArgumentPosition(0)]
         [ArgumentRequired]
         public string Contains { get; set; }
 
-        public override bool Match(MyMessageContext context, MessagePart messagePart)
+        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
         {
             var part = context.Get(messagePart);
 
@@ -158,15 +163,30 @@ namespace MQTools
         }
     }
 
+    [ArgumentDescription("Check that message part contains a string")]
+    public class EqualsCriteria : CriteriaBase
+    {
+        [ArgumentPosition(0)]
+        [ArgumentRequired]
+        public string Equals { get; set; }
+
+        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
+        {
+            var part = context.Get(messagePart);
+
+            return part.Equals(Equals, StringComparison);
+        }
+    }
+
     public class WhereCommand
     {
         public WhereCommand()
         {
-            Part = MessagePart.Body;
+            Part = ReadOnlyMessagePart.Body;
         }
 
         [ArgumentPosition(0)]
-        public MessagePart Part { get; set; }
+        public ReadOnlyMessagePart Part { get; set; }
 
         [ArgumentName("Not")]
         public bool Not { get; set; }
@@ -175,24 +195,23 @@ namespace MQTools
         [ArgumentCommand(typeof(MatchCriteria), "Match", "Matches")]
         [ArgumentCommand(typeof(ContainsCriteria), "Contain", "Contains")]
         [ArgumentCommand(typeof(OlderThanCriteria), "OlderThan", "Older")]
+        [ArgumentCommand(typeof(EqualsCriteria), "Equal", "Equals","Eq","=","==")]
         [ArgumentRequired]
         public CriteriaBase Criteria { get; set; }
 
-        public virtual void Initialize()
+        public void Initialize()
         {
             Criteria.Initialize();
         }
 
-        public virtual void Cleanup()
+        public void Cleanup()
         {
             Criteria.Cleanup();
         }
 
         public bool Match(MyMessageContext context)
         {
-            return Criteria.Match(context, Part) 
-                ? Not == false 
-                : Not == true;
+            return Criteria.Match(context, Part) == !Not;
         }
     }
 
@@ -201,7 +220,7 @@ namespace MQTools
         [ArgumentCommand(typeof(WhereCommand), "Where", "And")]
         public WhereCommand[] Filters { get; set; }
 
-        public virtual bool Match(MyMessageContext context)
+        public bool Match(MyMessageContext context)
         {
             return Filters == null || Filters.All(x => x.Match(context));
         }
@@ -296,12 +315,12 @@ namespace MQTools
     {
         public PrintCommand()
         {
-            Part = MessagePart.Body;
+            Part = ReadOnlyMessagePart.Body;
         }
 
         [ArgumentPosition(0)]
         [ArgumentDescription("Which part of message to print. Default is body.")]
-        public MessagePart Part { get; set; }
+        public ReadOnlyMessagePart Part { get; set; }
 
         public override bool Process(MyMessageContext context)
         {
@@ -331,8 +350,13 @@ namespace MQTools
 
         public override bool Process(MyMessageContext context)
         {
-            context.Set(context.Get(Part).Replace(Search,Replace), Part);
+            context.Set(context.Get((ReadOnlyMessagePart)Part).Replace(Search,Replace), Part);
             return base.Process(context);
         }
     }
+
+    // ReSharper restore MemberCanBePrivate.Global
+    // ReSharper restore UnusedAutoPropertyAccessor.Global
+    // ReSharper restore UnusedMember.Global
+    // ReSharper restore MemberCanBeProtected.Global
 }

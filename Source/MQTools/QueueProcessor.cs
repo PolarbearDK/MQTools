@@ -14,7 +14,7 @@ namespace MQTools
 
         private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(1);
         public long MessagesProcessed { get; private set; }
-        public DateTime CutoffDate { get; private set; }
+        private DateTime CutoffDate { get; set; }
 
         public QueueProcessor(MessageQueue queue, IEnumerable<CommandBase> commands, Encoding encoding)
         {
@@ -25,16 +25,28 @@ namespace MQTools
             messagePropertyFilter.SetAll();
             queue.MessageReadPropertyFilter = messagePropertyFilter;
 
-            foreach (var command in commands)
-            {
-                command.Initialize();
-            }
             _commands = commands;
             _encoding = encoding;
         }
 
         public void MessageLoop(uint batchSize, uint maxMessages)
         {
+            foreach (var command in _commands)
+            {
+                command.Initialize();
+            }
+
+            MessageLoop2(batchSize, maxMessages);
+
+            foreach (var command in _commands)
+            {
+                command.Cleanup();
+            }
+        }
+
+        private void MessageLoop2(uint batchSize, uint maxMessages)
+        {
+
             // Remember when we started, to prevent processing the same messages several times
             CutoffDate = DateTime.Now.Subtract(TimeSpan.FromSeconds(1));
             MessagesProcessed = 0;

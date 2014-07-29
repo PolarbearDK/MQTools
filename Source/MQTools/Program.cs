@@ -6,7 +6,7 @@ using System.Diagnostics;
 
 namespace MQTools
 {
-	class Program
+	static class Program
 	{
 		static int Main(string[] args)
 		{

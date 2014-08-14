@@ -4,43 +4,29 @@ using System.Linq;
 using System.Messaging;
 using System.Text;
 using System.Xml.Serialization;
-using NServiceBus;
 using NServiceBus.Transports.Msmq;
 
 namespace MQTools
 {
-    public enum MessagePart
+    public class MessageContext
     {
-        Body,
-        Extension,
-        Label,
-    }
-
-    public enum ReadOnlyMessagePart
-    {
-        Body = MessagePart.Body,
-        Extension = MessagePart.Extension,
-        Label = MessagePart.Label,
-        Id,
-        CorrelationId,
-    }
-
-    public class MyMessageContext
-    {
-        private readonly MessageQueueTransaction _transaction;
         private readonly Message _message;
         private readonly Encoding _encoding;
         private byte[] _body;
         private Lazy<string> _extensionLazy;
         private Lazy<HeaderInfo[]> _headersLazy;
 
-        public MyMessageContext(MessageQueueTransaction transaction, Message message, Encoding encoding)
+        public MessageContext(Message message, Encoding encoding)
         {
-            _transaction = transaction;
             _message = message;
             _encoding = encoding;
             _body = ((MemoryStream)_message.BodyStream).ToArray();
             ExtensionInitLazy(_message.Extension);
+        }
+
+        public string Id    
+        {
+            get { return _message.Id; }
         }
 
         private void ExtensionInitLazy(byte[] bytes)
@@ -71,10 +57,10 @@ namespace MQTools
                 }
             }
 
-            return new HeaderInfo[] {};
+            return new HeaderInfo[] { };
         }
 
-        public string Get(ReadOnlyMessagePart part)
+        public string Get(ReadOnlyMessagePart part, string key)
         {
             switch (part)
             {
@@ -88,6 +74,9 @@ namespace MQTools
                     return _message.Id;
                 case ReadOnlyMessagePart.CorrelationId:
                     return _message.CorrelationId;
+                case ReadOnlyMessagePart.Header:
+                    var header = GetHeader(key);
+                    return header != null ? header.Value : null;
                 default:
                     throw new ArgumentOutOfRangeException("part");
             }
@@ -112,79 +101,33 @@ namespace MQTools
             }
         }
 
-        public void Move(MessageQueue queue)
+        public HeaderInfo GetHeader(string key)
         {
-            Send(queue, false);
+            return _headersLazy.Value.SingleOrDefault(x => x.Key == key);
         }
 
-        public void Return(MessageQueue queue)
-        {
-            Send(queue, true);
-        }
-
-        private void Send(MessageQueue queue, bool isReturn)
+        public Message GetMessage()
         {
             _message.BodyStream = new MemoryStream(_body);
-
-            if (!isReturn)
-                Console.WriteLine("Moved message with ID {0} to queue {1}", _message.Id, queue.QueueName);
-
-            try
-            {
-                queue.Send(_message, _transaction);
-            }
-            catch (MessageQueueException)
-            {
-                Console.Error.WriteLine("Exception thrown while sending to queue {0}", queue.FormatName);
-                throw;
-            }
-        }
-
-        public void SendClone(MessageQueue queue)
-        {
-            var message = new Message
-                          {
-                              Formatter = _message.Formatter,
-                              AppSpecific = _message.AppSpecific,
-                              BodyStream = new MemoryStream(_body),
-                              CorrelationId = _message.CorrelationId,
-                              Extension = _message.Extension,
-                              Label = _message.Label,
-                              ResponseQueue = _message.ResponseQueue
-                          };
-
-            try
-            {
-                queue.Send(message, _transaction);
-            }
-            catch (MessageQueueException)
-            {
-                Console.Error.WriteLine("Exception thrown while cloning to queue {0}", queue.FormatName);
-                throw;
-            }
-
-            Console.WriteLine("Cloned message with ID {0} to queue {1}", message.Id, queue.QueueName);
+            return _message;
         }
 
         /// <summary>
-        /// Get NServiceBus sent time.
+        /// Clone current message
         /// </summary>
         /// <returns></returns>
-        public DateTime? GetUtcSentTime()
+        public Message GetClonedMessage()
         {
-            var header = _headersLazy.Value.SingleOrDefault(x => x.Key == Headers.TimeSent);
-            if (header != null)
+            return new Message
             {
-                try
-                {
-                    return DateTimeExtensions.ToUtcDateTime(header.Value);
-                }
-                // ReSharper disable once EmptyGeneralCatchClause
-                catch (Exception)
-                {
-                }
-            }
-            return null;
+                Formatter = _message.Formatter,
+                AppSpecific = _message.AppSpecific,
+                BodyStream = new MemoryStream(_body),
+                CorrelationId = _message.CorrelationId,
+                Extension = _message.Extension,
+                Label = _message.Label,
+                ResponseQueue = _message.ResponseQueue
+            };
         }
     }
 }

@@ -3,6 +3,8 @@ using System.Linq;
 using System.Messaging;
 using System.Text.RegularExpressions;
 using Miracle.Arguments;
+using MQTools.QueueAccessStrategies;
+using NServiceBus;
 
 namespace MQTools
 {
@@ -28,6 +30,7 @@ namespace MQTools
         {
             BatchSize = 1;
             Encoding = "UTF-8";
+            QueueAccessStrategy = QueueAccessStrategy.Cursor;
         }
 
         [ArgumentName("SourceQueue", "Source", "SQ")]
@@ -51,10 +54,19 @@ namespace MQTools
         [ArgumentDescription("Maximum number of messages to process. Default is all messages.")]
         public uint? MaxMessages { get; set; }
 
+        [ArgumentName("ReportInterval", "Report", "Interval")]
+        [ArgumentDescription("Determines the interval between status reports. Default is after every 1000 messages. 0=off.")]
+        public long? ReportInterval { get; set; }
+
+        [ArgumentName("QueueAccessStrategy", "QueueAccess", "Access")]
+        [ArgumentDescription("Determines the strategy used to get messages from source queue. Cursor is faster, does not change ID of messages, and can read from remote queues. Receive is better when multiple processes access the same local queue. Default is Cursor.")]
+        public QueueAccessStrategy QueueAccessStrategy { get; set; }
+
         [ArgumentCommand(typeof(CopyCommand), "Copy", "CP")]
         [ArgumentCommand(typeof(MoveCommand), "Move", "MV")]
         [ArgumentCommand(typeof(DeleteCommand), "Delete", "DEL")]
         [ArgumentCommand(typeof(PrintCommand), "Print", "Echo")]
+        [ArgumentCommand(typeof(CountCommand), "Count")]
         [ArgumentCommand(typeof(AlterCommand), "Alter", "Change")]
         [ArgumentRequired]
         public CommandBase[] Commands { get; set; }
@@ -69,6 +81,7 @@ namespace MQTools
         [ArgumentDescription(@"Display help for command.")]
         public string Command { get; set; }
     }
+
 
     public abstract class CriteriaBase
     {
@@ -85,7 +98,7 @@ namespace MQTools
         {
         }
 
-        public abstract bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart);
+        public abstract bool Match(MessageContext context, ReadOnlyMessagePart messagePart, string headerKey);
 
         [ArgumentName("StringComparison")]
         [ArgumentDescription("StringComparison used for string compares. Default is CurrentCultureIgnoreCase.")]
@@ -107,9 +120,9 @@ namespace MQTools
             Regex = new Regex(Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
         }
 
-        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
+        public override bool Match(MessageContext context, ReadOnlyMessagePart messagePart, string headerKey)
         {
-            return Regex.IsMatch(context.Get(messagePart));
+            return Regex.IsMatch(context.Get(messagePart, headerKey));
         }
     }
 
@@ -134,17 +147,27 @@ namespace MQTools
 
         public override void Initialize()
         {
-            _utcCompareTime = DateTime.UtcNow;
+            _utcCompareTime = DateTime.UtcNow - OlderThan;
         }
 
-        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
+        /// <summary>
+        /// Compare NServiceBus sent time (header value) .
+        /// </summary>
+        /// <returns></returns>
+        public override bool Match(MessageContext context, ReadOnlyMessagePart messagePart, string headerKey)
         {
-            var sentTime = context.GetUtcSentTime();
-            if (sentTime != null)
+            var header = context.GetHeader(headerKey ?? Headers.TimeSent);
+            if (header == null) return false;
+
+            try
             {
-                return (_utcCompareTime - sentTime.Value) > OlderThan;
+                var sentTime = DateTimeExtensions.ToUtcDateTime(header.Value);
+                return sentTime < _utcCompareTime;
             }
-            return false;
+            catch (Exception)
+            {
+                return false;
+            }
         }
     }
 
@@ -155,9 +178,9 @@ namespace MQTools
         [ArgumentRequired]
         public string Contains { get; set; }
 
-        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
+        public override bool Match(MessageContext context, ReadOnlyMessagePart messagePart, string headerKey)
         {
-            var part = context.Get(messagePart);
+            var part = context.Get(messagePart,headerKey);
 
             return part.IndexOf(Contains, StringComparison) != -1;
         }
@@ -168,13 +191,13 @@ namespace MQTools
     {
         [ArgumentPosition(0)]
         [ArgumentRequired]
-        public string Equals { get; set; }
+        public string EqualsValue { get; set; }
 
-        public override bool Match(MyMessageContext context, ReadOnlyMessagePart messagePart)
+        public override bool Match(MessageContext context, ReadOnlyMessagePart messagePart, string headerKey)
         {
-            var part = context.Get(messagePart);
+            var part = context.Get(messagePart, headerKey);
 
-            return part.Equals(Equals, StringComparison);
+            return part.Equals(EqualsValue, StringComparison);
         }
     }
 
@@ -186,10 +209,15 @@ namespace MQTools
         }
 
         [ArgumentPosition(0)]
+        [ArgumentDescription("Which part of message to check. Default is body.")]
         public ReadOnlyMessagePart Part { get; set; }
 
+        [ArgumentName("HeaderKey","Key")]
+        [ArgumentDescription("Header Key if part=Header, otherwise ignored.")]
+        public string HeaderKey { get; set; }
+
         [ArgumentName("Not")]
-        public bool Not { get; set; }
+        public bool Negate { get; set; }
 
         [ArgumentCommand(typeof(LikeCriteria), "Like")]
         [ArgumentCommand(typeof(MatchCriteria), "Match", "Matches")]
@@ -209,9 +237,9 @@ namespace MQTools
             Criteria.Cleanup();
         }
 
-        public bool Match(MyMessageContext context)
+        public bool Match(MessageContext context)
         {
-            return Criteria.Match(context, Part) == !Not;
+            return Criteria.Match(context, Part, HeaderKey) == !Negate;
         }
     }
 
@@ -220,7 +248,7 @@ namespace MQTools
         [ArgumentCommand(typeof(WhereCommand), "Where", "And")]
         public WhereCommand[] Filters { get; set; }
 
-        public bool Match(MyMessageContext context)
+        public bool Match(MessageContext context)
         {
             return Filters == null || Filters.All(x => x.Match(context));
         }
@@ -247,7 +275,7 @@ namespace MQTools
             }
         }
 
-        public virtual bool Process(MyMessageContext context)
+        public virtual bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
             return false; // Message has not been handled
         }
@@ -255,7 +283,8 @@ namespace MQTools
 
     public abstract class QueueCommandBase : CommandBase
     {
-        protected MessageQueue DestinationQueue;
+        protected MessageQueue DestinationQueue { get; private set; }
+        protected string DestinationQueueName { get; private set; }
 
         [ArgumentName("ToQueue", "To")]
         [ArgumentRequired]
@@ -266,9 +295,11 @@ namespace MQTools
 
         public override void Initialize()
         {
-            DestinationQueue = QueueFactory.GetQueue(On, To);
+            DestinationQueueName = QueueFactory.GetQueueName(On, To);
+            DestinationQueue = QueueFactory.GetOutputQueue(On, To);
             base.Initialize();
         }
+
 
         public override void Cleanup()
         {
@@ -284,29 +315,32 @@ namespace MQTools
     [ArgumentDescription("Copy message to queue.")]
     public class CopyCommand : QueueCommandBase
     {
-        public override bool Process(MyMessageContext context)
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
-            context.SendClone(DestinationQueue);
-            return base.Process(context);
+            strategy.Send(DestinationQueue, context.GetClonedMessage());
+            Console.WriteLine("Cloned message with ID {0} to queue {1}", context.Id, DestinationQueueName);
+            return false;
         }
     }
 
     [ArgumentDescription("Move message to queue.")]
     public class MoveCommand : QueueCommandBase
     {
-        public override bool Process(MyMessageContext context)
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
-            context.Move(DestinationQueue);
-            return true;
+            strategy.Send(DestinationQueue, context.GetMessage());
+            Console.WriteLine("Moved message with ID {0} to queue {1}", context.Id, DestinationQueueName);
+            return true; // Message has been handled
         }
     }
 
     [ArgumentDescription("Delete message.")]
     public class DeleteCommand : CommandBase
     {
-        public override bool Process(MyMessageContext context)
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
-            return true;
+            strategy.Delete(context.GetMessage());
+            return true; // Message has been handled
         }
     }
 
@@ -322,10 +356,47 @@ namespace MQTools
         [ArgumentDescription("Which part of message to print. Default is body.")]
         public ReadOnlyMessagePart Part { get; set; }
 
-        public override bool Process(MyMessageContext context)
+        [ArgumentPosition(1)]
+        [ArgumentDescription("Header Key if part=Header, otherwise ignored.")]
+        public string HeaderKey { get; set; }
+
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
-            Console.WriteLine(context.Get(Part));
-            return base.Process(context);
+            Console.WriteLine(context.Get(Part, HeaderKey));
+            return base.PerformAction(strategy, context);
+        }
+    }
+
+    [ArgumentDescription("Print message part as raw text.")]
+    public class CountCommand : CommandBase
+    {
+        private static int uniqueCounterNumber = 1;
+        private int count;
+
+        public CountCommand()
+        {
+            Name = "Counter" + uniqueCounterNumber++;
+        }
+
+        public override void Initialize()
+        {
+            count = 0;
+        }
+
+        public override void Cleanup()
+        {
+            base.Cleanup();
+            Console.WriteLine("{0}: {1}", Name, count);
+        }
+
+        [ArgumentName("Name","As")]
+        [ArgumentDescription("Name of counter.")]
+        public string Name { get; set; }
+
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
+        {
+            count++;
+            return base.PerformAction(strategy, context);
         }
     }
 
@@ -348,10 +419,10 @@ namespace MQTools
         [ArgumentRequired]
         public string Replace { get; set; }
 
-        public override bool Process(MyMessageContext context)
+        public override bool PerformAction(IQueueAccessStrategy strategy, MessageContext context)
         {
-            context.Set(context.Get((ReadOnlyMessagePart)Part).Replace(Search,Replace), Part);
-            return base.Process(context);
+            context.Set(context.Get((ReadOnlyMessagePart)Part,null).Replace(Search,Replace), Part);
+            return base.PerformAction(strategy, context);
         }
     }
 

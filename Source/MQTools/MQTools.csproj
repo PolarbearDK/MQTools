@@ -59,11 +59,18 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Arguments.cs" />
+    <Compile Include="MessagePart.cs" />
+    <Compile Include="QueueAccessStrategies\CursorAccessStrategy.cs" />
+    <Compile Include="QueueAccessStrategies\IQueueAccessStrategy.cs" />
+    <Compile Include="QueueAccessStrategies\QueueAccessStrategy.cs" />
+    <Compile Include="QueueAccessStrategies\QueueAccessStrategyFactory.cs" />
+    <Compile Include="QueueAccessStrategies\ReceiveAccessStrategy.cs" />
     <Compile Include="QueueFactory.cs" />
-    <Compile Include="MyMessageContext.cs" />
+    <Compile Include="MessageContext.cs" />
     <Compile Include="Program.cs" />
-    <Compile Include="QueueProcessor.cs" />
+    <Compile Include="MessageProcessor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="ReadOnlyMessagePart.cs" />
     <Compile Include="Wildcard.cs" />
   </ItemGroup>
   <ItemGroup>

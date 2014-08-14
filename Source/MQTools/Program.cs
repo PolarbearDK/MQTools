@@ -3,6 +3,7 @@ using System.Messaging;
 using System.Text;
 using Miracle.Arguments;
 using System.Diagnostics;
+using MQTools.QueueAccessStrategies;
 
 namespace MQTools
 {
@@ -14,17 +15,23 @@ namespace MQTools
 			if (arguments == null)
 				return 1;
 
-		    var queue = QueueFactory.GetQueue(arguments.SourceMachine, arguments.SourceQueue);
-		    var processor = new QueueProcessor(queue, arguments.Commands, Encoding.GetEncoding(arguments.Encoding));
+		    var processor = new MessageProcessor(
+                arguments.Commands, 
+                Math.Max(arguments.BatchSize, 1),
+                arguments.ReportInterval.GetValueOrDefault(1000),
+                arguments.MaxMessages.GetValueOrDefault(uint.MaxValue),
+                Encoding.GetEncoding(arguments.Encoding)
+                );
 		    var returnCode = 0;
-		    
+            var queue = QueueFactory.GetInputQueue(arguments.SourceMachine, arguments.SourceQueue);
 
 		    var stopwatch = Stopwatch.StartNew();
 		    try
 		    {
-                processor.MessageLoop(
-                    Math.Max(arguments.BatchSize, 1), 
-                    arguments.MaxMessages.GetValueOrDefault(uint.MaxValue));
+                using (var strategy = QueueAccessStrategyFactory.Create(arguments.QueueAccessStrategy, queue))
+                {
+                    processor.Process(strategy);
+                }
 		    }
 		    catch (MessageQueueException ex)
 		    {

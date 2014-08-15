@@ -1,4 +1,4 @@
-#MQTools
+MQTools
 =======
 Command line tool for copying, moving, deleting, altering &amp; viewing MSMQ messages. 
 
